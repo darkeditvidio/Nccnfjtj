@@ -20,7 +20,6 @@ jobs:
 
       - name: Create Single RDP User and Disable Others
         run: |
-          # إنشاء مستخدم واحد فقط (RDP)
           Add-Type -AssemblyName System.Security
           $charSet = @{
               Upper   = [char[]](65..90)
@@ -36,29 +35,26 @@ jobs:
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # حذف أي مستخدم RDP قديم (إذا وجد) لتجنب التكرار
           if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
               Remove-LocalUser -Name "RDP"
           }
 
-          # إنشاء المستخدم الجديد
           New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
           Add-LocalGroupMember -Group "Administrators" -Member "RDP"
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
 
-          # تعطيل حساب Administrator المدمج (لضمان وجود مستخدم واحد فقط)
-          Disable-LocalUser -Name "Administrator"
-
-          # إزالة أي مستخدمين آخرين من مجموعات RDP (باستثناء RDP)
-          $usersToRemove = Get-LocalGroupMember -Group "Remote Desktop Users" | Where-Object { $_.Name -ne "RDP" }
-          foreach ($user in $usersToRemove) {
-              Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $user.Name
+          if (Get-LocalUser -Name "Administrator" -ErrorAction SilentlyContinue) {
+              Disable-LocalUser -Name "Administrator"
           }
 
-          # التأكد من أن المستخدم RDP هو الوحيد في مجموعة المديرين أيضاً (اختياري)
+          $usersToRemove = Get-LocalGroupMember -Group "Remote Desktop Users" | Where-Object { $_.Name -ne "RDP" -and $_.Name -ne "Administrator" }
+          foreach ($user in $usersToRemove) {
+              Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $user.Name -ErrorAction SilentlyContinue
+          }
+
           $adminUsers = Get-LocalGroupMember -Group "Administrators" | Where-Object { $_.Name -ne "RDP" -and $_.Name -ne "Administrator" }
           foreach ($user in $adminUsers) {
-              Remove-LocalGroupMember -Group "Administrators" -Member $user.Name
+              Remove-LocalGroupMember -Group "Administrators" -Member $user.Name -ErrorAction SilentlyContinue
           }
 
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
