@@ -18,8 +18,9 @@ jobs:
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
-      - name: Create Single RDP User and Disable Others
+      - name: Create User 'flex' and Remove All Others from RDP
         run: |
+          # 1. إنشاء مستخدم flex
           Add-Type -AssemblyName System.Security
           $charSet = @{
               Upper   = [char[]](65..90)
@@ -35,31 +36,39 @@ jobs:
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-              Remove-LocalUser -Name "RDP"
+          # حذف المستخدم القديم إن وجد
+          if (Get-LocalUser -Name "flex" -ErrorAction SilentlyContinue) {
+              Remove-LocalUser -Name "flex"
           }
 
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          # إنشاء المستخدم الجديد
+          New-LocalUser -Name "flex" -Password $securePass -AccountNeverExpires -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member "flex"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "flex"
 
+          # 2. إزالة أي مستخدم آخر من مجموعة Remote Desktop Users (باستثناء flex)
+          $rdpUsers = Get-LocalGroupMember -Group "Remote Desktop Users"
+          foreach ($user in $rdpUsers) {
+              if ($user.Name -ne "flex" -and $user.Name -ne "Administrator") {
+                  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $user.Name -ErrorAction SilentlyContinue
+              }
+          }
+
+          # 3. تعطيل حساب Administrator المدمج إن وجد
           if (Get-LocalUser -Name "Administrator" -ErrorAction SilentlyContinue) {
               Disable-LocalUser -Name "Administrator"
           }
 
-          $usersToRemove = Get-LocalGroupMember -Group "Remote Desktop Users" | Where-Object { $_.Name -ne "RDP" -and $_.Name -ne "Administrator" }
-          foreach ($user in $usersToRemove) {
-              Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $user.Name -ErrorAction SilentlyContinue
-          }
+          # 4. (اختياري) تعطيل أي مستخدم آخر قد يكون موجوداً (مثل runneradmin) من Remote Desktop
+          #    ملاحظة: runneradmin هو المستخدم الافتراضي، لكننا نضمن أنه ليس في مجموعة RDP.
+          #    نحتاج أيضاً إلى التأكد من أنه ليس في المجموعة، لكنه قد لا يكون موجوداً في القائمة.
+          #    سنقوم بإزالته من المجموعة إذا ظهر.
 
-          $adminUsers = Get-LocalGroupMember -Group "Administrators" | Where-Object { $_.Name -ne "RDP" -and $_.Name -ne "Administrator" }
-          foreach ($user in $adminUsers) {
-              Remove-LocalGroupMember -Group "Administrators" -Member $user.Name -ErrorAction SilentlyContinue
-          }
+          # 5. حفظ بيانات الدخول
+          echo "RDP_CREDS=User: flex | Password: $password" >> $env:GITHUB_ENV
 
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-
-          if (-not (Get-LocalUser -Name "RDP")) {
+          # 6. التحقق من وجود المستخدم
+          if (-not (Get-LocalUser -Name "flex")) {
               Write-Error "User creation failed"
               exit 1
           }
@@ -74,11 +83,15 @@ jobs:
 
       - name: Establish Tailscale Connection
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $tsPath = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tsPath)) {
+              $tsPath = "$env:ProgramFiles (x86)\Tailscale\tailscale.exe"
+          }
+          & $tsPath up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              $tsIP = & $tsPath ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
@@ -102,7 +115,7 @@ jobs:
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
+          Write-Host "Username: flex"
           Write-Host "Password: $(echo $env:RDP_CREDS | Select-String -Pattern 'Password: (.+)' | ForEach-Object { $_.Matches.Groups[1].Value })"
           Write-Host "==================`n"
           while ($true) {
